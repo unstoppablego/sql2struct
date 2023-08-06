@@ -1,9 +1,11 @@
 package parser
 
 import (
+	"encoding/json"
 	"fmt"
 	"go/format"
 	"io"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -20,8 +22,10 @@ import (
 var (
 	structTmplRaw string
 	fileTmplRaw   string
+	emunTmplRaw   string
 	structTmpl    *template.Template
 	fileTmpl      *template.Template
+	emunTmpl      *template.Template
 	tmplParseOnce sync.Once
 )
 
@@ -35,6 +39,7 @@ type ModelCodes struct {
 	Package    string
 	ImportPath []string
 	StructCode []string
+	EmunData   []string
 }
 
 func ParseSql(sql string, options ...Option) (ModelCodes, error) {
@@ -47,12 +52,14 @@ func ParseSql(sql string, options ...Option) (ModelCodes, error) {
 	}
 	tableStr := make([]string, 0, len(stmts))
 	importPath := make(map[string]struct{})
+	var emunData []string
 	for _, stmt := range stmts {
 		if ct, ok := stmt.(*ast.CreateTableStmt); ok {
-			s, ipt, err := makeCode(ct, opt)
+			emun, s, ipt, err := makeCode(ct, opt)
 			if err != nil {
 				return ModelCodes{}, err
 			}
+			emunData = append(emunData, emun...)
 			tableStr = append(tableStr, s)
 			for _, s := range ipt {
 				importPath[s] = struct{}{}
@@ -68,6 +75,7 @@ func ParseSql(sql string, options ...Option) (ModelCodes, error) {
 		Package:    opt.Package,
 		ImportPath: importPathArr,
 		StructCode: tableStr,
+		EmunData:   emunData,
 	}, nil
 }
 
@@ -99,14 +107,18 @@ type tmplData struct {
 }
 
 type tmplField struct {
-	Name    string
-	GoType  string
-	Tag     string
-	Comment string
+	Name      string
+	GoType    string
+	Tag       string
+	Comment   string
+	EmunName  string //
+	EmunValue []string
 }
 
-func makeCode(stmt *ast.CreateTableStmt, opt options) (string, []string, error) {
+func makeCode(stmt *ast.CreateTableStmt, opt options) ([]string, string, []string, error) {
 	importPath := make([]string, 0, 1)
+	var emumData []string
+
 	data := tmplData{
 		TableName:    stmt.Table.Name.String(),
 		RawTableName: stmt.Table.Name.String(),
@@ -155,10 +167,13 @@ func makeCode(stmt *ast.CreateTableStmt, opt options) (string, []string, error) 
 		gormTag := strings.Builder{}
 		gormTag.WriteString("column:")
 		gormTag.WriteString(colName)
+
+		//在这里解析出type 数据内容
 		if opt.GormType {
 			gormTag.WriteString(";type:")
 			gormTag.WriteString(col.Tp.InfoSchemaStr())
 		}
+
 		if isPrimaryKey[colName] {
 			gormTag.WriteString(";primary_key")
 		}
@@ -212,8 +227,35 @@ func makeCode(stmt *ast.CreateTableStmt, opt options) (string, []string, error) 
 		goType, pkg := mysqlToGoType(col.Tp, nullStyle)
 		if pkg != "" {
 			importPath = append(importPath, pkg)
+
 		}
-		field.GoType = goType
+		//-----------
+		if goType == "emun" {
+
+			field.EmunName = data.TableName + "_" + toCamel(goFieldName)
+			emunContent := col.Tp.InfoSchemaStr()
+			emunContent = strings.Replace(emunContent, "enum(", "[", 1)
+			emunContent = strings.Replace(emunContent, "')", "']", 1)
+			emunContent = strings.Replace(emunContent, "'", "\"", -1)
+			var emunValue []string
+			err := json.Unmarshal([]byte(emunContent), &emunValue)
+			if err != nil {
+				log.Panic(err)
+			}
+
+			field.EmunValue = emunValue
+
+			field.GoType = field.EmunName
+
+			builder := strings.Builder{}
+			err = emunTmpl.Execute(&builder, field)
+			if err != nil {
+				log.Panic(err)
+			}
+			emumData = append(emumData, builder.String())
+		} else {
+			field.GoType = goType
+		}
 
 		data.Fields = append(data.Fields, field)
 	}
@@ -221,13 +263,14 @@ func makeCode(stmt *ast.CreateTableStmt, opt options) (string, []string, error) 
 	builder := strings.Builder{}
 	err := structTmpl.Execute(&builder, data)
 	if err != nil {
-		return "", nil, err
+		return emumData, "", nil, err
 	}
+
 	code, err := format.Source([]byte(builder.String()))
 	if err != nil {
-		return string(code), importPath, errors.WithMessage(err, "format golang code error")
+		return emumData, string(code), importPath, errors.WithMessage(err, "format golang code error")
 	}
-	return string(code), importPath, nil
+	return emumData, string(code), importPath, nil
 }
 
 func mysqlToGoType(colTp *types.FieldType, style NullStyle) (name string, path string) {
@@ -279,6 +322,8 @@ func mysqlToGoType(colTp *types.FieldType, style NullStyle) (name string, path s
 			path = "github.com/shopspring/decimal"
 		case mysql.TypeJSON:
 			name = "string"
+		case mysql.TypeEnum:
+			return "emun", ""
 		default:
 			return "UnSupport", ""
 		}
@@ -366,7 +411,13 @@ func initTemplate() {
 		if err != nil {
 			panic(err)
 		}
+
 		fileTmpl, err = template.New("goFile").Parse(fileTmplRaw)
+		if err != nil {
+			panic(err)
+		}
+
+		emunTmpl, err = template.New("emunTmplRaw").Parse(emunTmplRaw)
 		if err != nil {
 			panic(err)
 		}
@@ -374,6 +425,13 @@ func initTemplate() {
 }
 
 func init() {
+
+	emunTmplRaw = `type {{.EmunName}} string
+{{range .EmunValue}}
+const {{$.EmunName}}_{{.}} {{$.EmunName}} = "{{.}}"
+{{end}}
+`
+
 	structTmplRaw = `
 {{- if .Comment -}}
 // {{.Comment}}
@@ -388,6 +446,7 @@ func (m *{{.TableName}}) TableName() string {
 	return "{{.RawTableName}}"
 }
 {{end}}`
+
 	fileTmplRaw = `// Code generated by github.com/unstoppablego/sql2struct
 package {{.Package}}
 {{if .ImportPath}}
@@ -397,6 +456,13 @@ import (
 	{{- end}}
 )
 {{- end}}
+
+{{if .EmunData}}
+{{- range .EmunData}}
+{{.}}
+{{- end}}
+{{- end}}
+
 {{range .StructCode}}
 {{.}}
 {{end}}
