@@ -149,7 +149,7 @@ func main() {
 
 					var output io.Writer
 					if args.OutputFile != "" {
-						f, err := os.OpenFile(args.OutputFile, os.O_CREATE|os.O_WRONLY, 0666)
+						f, err := os.OpenFile(args.OutputFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 						if err != nil {
 							exitWithInfo("open %s failed, %s\n", args.OutputFile, err)
 						}

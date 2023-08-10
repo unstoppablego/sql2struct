@@ -430,6 +430,11 @@ func init() {
 {{range .EmunValue}}
 const {{$.EmunName}}_{{.}} {{$.EmunName}} = "{{.}}"
 {{end}}
+var {{.EmunName}}_Slice = []{{.EmunName}}{
+{{range .EmunValue}}
+ {{$.EmunName}}_{{.}},
+{{end}}
+}
 `
 
 	structTmplRaw = `
