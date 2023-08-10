@@ -430,9 +430,9 @@ func init() {
 {{range .EmunValue}}
 const {{$.EmunName}}_{{.}} {{$.EmunName}} = "{{.}}"
 {{end}}
-var {{.EmunName}}_Slice = []{{.EmunName}}{
+var {{.EmunName}}_Slice = []string{
 {{range .EmunValue}}
- {{$.EmunName}}_{{.}},
+string({{$.EmunName}}_{{.}}),
 {{end}}
 }
 `
