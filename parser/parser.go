@@ -466,7 +466,7 @@ func init() {
 func Get{{.TstructName}}PK_{{.PkName}}(id int, tx *gorm.DB) *{{.TstructName}} {
 
 	var a {{.TstructName}}
-	if err := tx.Where("{{.PkName}} = ?", id).Take(&a); err == nil {
+	if err := tx.Where("{{.PkName}} = ?", id).Take(&a).Error; err == nil {
 		return &a
 	}
 	return nil
