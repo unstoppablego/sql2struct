@@ -28,6 +28,7 @@ type options struct {
 
 	MysqlDsn   string
 	MysqlTable string
+	KeyMapPath string
 }
 
 func exitWithInfo(format string, a ...interface{}) {
@@ -39,6 +40,7 @@ func parseFlag() options {
 	args := options{}
 	//flagSet := flag.NewFlagSet("optional", flag.ExitOnError)
 
+	flag.StringVar(&args.KeyMapPath, "keymap", "", "keymap file path")
 	flag.StringVar(&args.InputFile, "f", "", "input file")
 	flag.StringVar(&args.OutputFile, "o", "", "output file")
 	flag.StringVar(&args.Sql, "sql", "", "input SQL")
@@ -162,6 +164,9 @@ func main() {
 					if err := parser.ParseSqlToWrite(sql, output, opt...); err != nil {
 						exitWithInfo(err.Error())
 					}
+				}
+				if args.KeyMapPath != "" {
+					parser.CreateKeyMapCode(args.KeyMapPath)
 				}
 				return
 			}

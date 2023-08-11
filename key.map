@@ -1,0 +1,2 @@
+#Table col REFERENCES parent_table col 
+server_op server_id REFERENCES server id
