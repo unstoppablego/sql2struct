@@ -20,13 +20,15 @@ import (
 )
 
 var (
-	structTmplRaw string
-	fileTmplRaw   string
-	emunTmplRaw   string
-	structTmpl    *template.Template
-	fileTmpl      *template.Template
-	emunTmpl      *template.Template
-	tmplParseOnce sync.Once
+	structTmplRaw   string
+	fileTmplRaw     string
+	enumTmplRaw     string
+	FindByIdTmplRaw string
+	structTmpl      *template.Template
+	fileTmpl        *template.Template
+	enumTmpl        *template.Template
+	FindPkTmpl      *template.Template
+	tmplParseOnce   sync.Once
 )
 
 var acronym = map[string]struct{}{
@@ -40,6 +42,12 @@ type ModelCodes struct {
 	ImportPath []string
 	StructCode []string
 	EmunData   []string
+	Pkcode     []string
+}
+
+type FindByPkCodes struct {
+	TstructName string
+	PkName      string
 }
 
 func ParseSql(sql string, options ...Option) (ModelCodes, error) {
@@ -53,13 +61,15 @@ func ParseSql(sql string, options ...Option) (ModelCodes, error) {
 	tableStr := make([]string, 0, len(stmts))
 	importPath := make(map[string]struct{})
 	var emunData []string
+	var pkCodeSlice []string
 	for _, stmt := range stmts {
 		if ct, ok := stmt.(*ast.CreateTableStmt); ok {
-			emun, s, ipt, err := makeCode(ct, opt)
+			pkcode, emun, s, ipt, err := makeCode(ct, opt)
 			if err != nil {
 				return ModelCodes{}, err
 			}
 			emunData = append(emunData, emun...)
+			pkCodeSlice = append(pkCodeSlice, pkcode...)
 			tableStr = append(tableStr, s)
 			for _, s := range ipt {
 				importPath[s] = struct{}{}
@@ -70,12 +80,14 @@ func ParseSql(sql string, options ...Option) (ModelCodes, error) {
 	for s := range importPath {
 		importPathArr = append(importPathArr, s)
 	}
+	importPathArr = append(importPathArr, `gorm.io/gorm`)
 	sort.Strings(importPathArr)
 	return ModelCodes{
 		Package:    opt.Package,
 		ImportPath: importPathArr,
 		StructCode: tableStr,
 		EmunData:   emunData,
+		Pkcode:     pkCodeSlice,
 	}, nil
 }
 
@@ -115,9 +127,10 @@ type tmplField struct {
 	EmunValue []string
 }
 
-func makeCode(stmt *ast.CreateTableStmt, opt options) ([]string, string, []string, error) {
+func makeCode(stmt *ast.CreateTableStmt, opt options) ([]string, []string, string, []string, error) {
 	importPath := make([]string, 0, 1)
 	var emumData []string
+	var pkCode []string
 
 	data := tmplData{
 		TableName:    stmt.Table.Name.String(),
@@ -176,6 +189,7 @@ func makeCode(stmt *ast.CreateTableStmt, opt options) ([]string, string, []strin
 
 		if isPrimaryKey[colName] {
 			gormTag.WriteString(";primary_key")
+
 		}
 		isNotNull := false
 		canNull := false
@@ -248,7 +262,7 @@ func makeCode(stmt *ast.CreateTableStmt, opt options) ([]string, string, []strin
 			field.GoType = field.EmunName
 
 			builder := strings.Builder{}
-			err = emunTmpl.Execute(&builder, field)
+			err = enumTmpl.Execute(&builder, field)
 			if err != nil {
 				log.Panic(err)
 			}
@@ -257,20 +271,33 @@ func makeCode(stmt *ast.CreateTableStmt, opt options) ([]string, string, []strin
 			field.GoType = goType
 		}
 
+		if x, ok := isPrimaryKey[colName]; ok {
+			if x {
+				var a FindByPkCodes
+				a.PkName = colName
+				a.TstructName = data.TableName
+				builder := strings.Builder{}
+				err := FindPkTmpl.Execute(&builder, a)
+				if err != nil {
+					log.Panic(err)
+				}
+				pkCode = append(pkCode, builder.String())
+			}
+		}
 		data.Fields = append(data.Fields, field)
 	}
 
 	builder := strings.Builder{}
 	err := structTmpl.Execute(&builder, data)
 	if err != nil {
-		return emumData, "", nil, err
+		return pkCode, emumData, "", nil, err
 	}
 
 	code, err := format.Source([]byte(builder.String()))
 	if err != nil {
-		return emumData, string(code), importPath, errors.WithMessage(err, "format golang code error")
+		return pkCode, emumData, string(code), importPath, errors.WithMessage(err, "format golang code error")
 	}
-	return emumData, string(code), importPath, nil
+	return pkCode, emumData, string(code), importPath, nil
 }
 
 func mysqlToGoType(colTp *types.FieldType, style NullStyle) (name string, path string) {
@@ -417,7 +444,12 @@ func initTemplate() {
 			panic(err)
 		}
 
-		emunTmpl, err = template.New("emunTmplRaw").Parse(emunTmplRaw)
+		enumTmpl, err = template.New("emunTmplRaw").Parse(enumTmplRaw)
+		if err != nil {
+			panic(err)
+		}
+
+		FindPkTmpl, err = template.New("FindByIdTmplRaw").Parse(FindByIdTmplRaw)
 		if err != nil {
 			panic(err)
 		}
@@ -426,7 +458,18 @@ func initTemplate() {
 
 func init() {
 
-	emunTmplRaw = `type {{.EmunName}} string
+	FindByIdTmplRaw = `
+func Get{{.TstructName}}PK_{{.PkName}}(id int, tx *gorm.DB) *{{.TstructName}} {
+
+	var a {{.TstructName}}
+	if err := tx.Where("{{.PkName}} = ?", id).Take(&a); err == nil {
+		return &a
+	}
+	return nil
+}
+`
+
+	enumTmplRaw = `type {{.EmunName}} string
 {{range .EmunValue}}
 const {{$.EmunName}}_{{.}} {{$.EmunName}} = "{{.}}"
 {{end}}
@@ -471,5 +514,11 @@ import (
 {{range .StructCode}}
 {{.}}
 {{end}}
+
+{{if .Pkcode}}
+{{- range .Pkcode}}
+{{.}}
+{{- end}}
+{{- end}}
 `
 }
