@@ -80,7 +80,11 @@ func ParseSql(sql string, options ...Option) (ModelCodes, error) {
 	for s := range importPath {
 		importPathArr = append(importPathArr, s)
 	}
-	importPathArr = append(importPathArr, `gorm.io/gorm`)
+
+	if len(pkCodeSlice) > 0 {
+		importPathArr = append(importPathArr, `gorm.io/gorm`)
+	}
+
 	sort.Strings(importPathArr)
 	return ModelCodes{
 		Package:    opt.Package,
