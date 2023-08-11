@@ -82,7 +82,7 @@ func ParseSql(sql string, options ...Option) (ModelCodes, error) {
 	}
 
 	if len(pkCodeSlice) > 0 {
-		importPathArr = append(importPathArr, `gorm.io/gorm`)
+		importPathArr = append(importPathArr, `gorm.io/gorm`, `gorm.io/gorm/clause`)
 	}
 
 	sort.Strings(importPathArr)
@@ -463,10 +463,19 @@ func initTemplate() {
 func init() {
 
 	FindByIdTmplRaw = `
-func Get{{.TstructName}}PK_{{.PkName}}(id int, tx *gorm.DB) *{{.TstructName}} {
+func Get{{.TstructName}}ByPK_{{.PkName}}(id int, tx *gorm.DB) *{{.TstructName}} {
 
 	var a {{.TstructName}}
 	if err := tx.Where("{{.PkName}} = ?", id).Take(&a).Error; err == nil {
+		return &a
+	}
+	return nil
+}
+
+func Get{{.TstructName}}ByPK_{{.PkName}}_ForUpdate(id int, tx *gorm.DB) *{{.TstructName}} {
+
+	var a {{.TstructName}}
+	if err := tx.Where("{{.PkName}} = ?", id).Clauses(clause.Locking{Strength: "UPDATE"}).Take(&a).Error; err == nil {
 		return &a
 	}
 	return nil
